@@ -6,8 +6,15 @@ import (
 )
 
 // BuildLayoutTree creates a layout tree from DOM and computed styles
+// Only builds from <body> element
 func BuildLayoutTree(d *dom.DOM, stylesheet *css.Stylesheet) *LayoutTree {
 	tree := NewLayoutTree()
+
+	// Find body element
+	bodyID := findBody(d, d.Root)
+	if bodyID == dom.InvalidNodeID {
+		return tree
+	}
 
 	var build func(nodeID dom.NodeID, parentStyle css.Style) LayoutNodeID
 	build = func(nodeID dom.NodeID, parentStyle css.Style) LayoutNodeID {
@@ -43,8 +50,27 @@ func BuildLayoutTree(d *dom.DOM, stylesheet *css.Stylesheet) *LayoutTree {
 		return layoutID
 	}
 
-	tree.Root = build(d.Root, css.DefaultStyle())
+	tree.Root = build(bodyID, css.DefaultStyle())
 	return tree
+}
+
+func findBody(d *dom.DOM, nodeID dom.NodeID) dom.NodeID {
+	node := d.GetNode(nodeID)
+	if node == nil {
+		return dom.InvalidNodeID
+	}
+
+	if node.Type == dom.NodeTypeElement && node.Tag == "body" {
+		return nodeID
+	}
+
+	for _, childID := range node.Children {
+		if found := findBody(d, childID); found != dom.InvalidNodeID {
+			return found
+		}
+	}
+
+	return dom.InvalidNodeID
 }
 
 func computeStyle(node *dom.Node, parentStyle css.Style, stylesheet *css.Stylesheet) css.Style {
