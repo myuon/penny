@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"image"
+	"image/color"
 	"io"
 	"net/http"
 	"net/url"
@@ -11,20 +12,53 @@ import (
 	"strings"
 
 	"gioui.org/app"
+	"gioui.org/font/gofont"
+	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	giopaint "gioui.org/op/paint"
+	"gioui.org/text"
 	"gioui.org/unit"
+	"gioui.org/widget"
+	"gioui.org/widget/material"
 	"github.com/myuon/penny/css"
 	"github.com/myuon/penny/dom"
-	"github.com/myuon/penny/layout"
+	pennylayout "github.com/myuon/penny/layout"
 	"github.com/myuon/penny/paint"
 )
 
 const (
-	windowWidth  = 800
-	windowHeight = 600
+	contentWidth  = 600
+	contentHeight = 600
+	devToolsWidth = 400
+	windowWidth   = contentWidth + devToolsWidth
+	windowHeight  = 600
 )
+
+type DevTab int
+
+const (
+	TabDOM DevTab = iota
+	TabStylesheet
+	TabLayoutTree
+	TabPaintOps
+)
+
+type Browser struct {
+	document   *dom.DOM
+	stylesheet *css.Stylesheet
+	layoutTree *pennylayout.LayoutTree
+	paintList  *paint.PaintList
+	canvas     *image.RGBA
+
+	// UI state
+	activeTab   DevTab
+	btnDOM      widget.Clickable
+	btnStyle    widget.Clickable
+	btnLayout   widget.Clickable
+	btnPaint    widget.Clickable
+	devScroll   widget.List
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -70,7 +104,13 @@ func main() {
 		stylesheet = loadStylesheetsFromDir(document, baseDir)
 	}
 
-	img := render(document, stylesheet)
+	browser := &Browser{
+		document:   document,
+		stylesheet: stylesheet,
+		activeTab:  TabDOM,
+	}
+	browser.devScroll.Axis = layout.Vertical
+	browser.render()
 
 	go func() {
 		w := new(app.Window)
@@ -79,7 +119,7 @@ func main() {
 			app.Size(unit.Dp(windowWidth), unit.Dp(windowHeight)),
 		)
 
-		if err := run(w, img); err != nil {
+		if err := browser.run(w); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -89,37 +129,157 @@ func main() {
 	app.Main()
 }
 
-func render(document *dom.DOM, stylesheet *css.Stylesheet) *image.RGBA {
-	layoutTree := layout.BuildLayoutTree(document, stylesheet)
-	layout.ComputeLayout(layoutTree, windowWidth, windowHeight)
+func (b *Browser) render() {
+	b.layoutTree = pennylayout.BuildLayoutTree(b.document, b.stylesheet)
+	pennylayout.ComputeLayout(b.layoutTree, contentWidth, contentHeight)
 
-	paintList := paint.NewPaintList()
-	paint.PaintBackground(paintList, windowWidth, windowHeight, css.ColorWhite)
-	ops := paint.Paint(layoutTree)
-	paintList.Ops = append(paintList.Ops, ops.Ops...)
+	b.paintList = paint.NewPaintList()
+	paint.PaintBackground(b.paintList, contentWidth, contentHeight, css.ColorWhite)
+	ops := paint.Paint(b.layoutTree)
+	b.paintList.Ops = append(b.paintList.Ops, ops.Ops...)
 
-	return paint.Rasterize(paintList, windowWidth, windowHeight)
+	b.canvas = paint.Rasterize(b.paintList, contentWidth, contentHeight)
 }
 
-func run(w *app.Window, img *image.RGBA) error {
+func (b *Browser) run(w *app.Window) error {
+	th := material.NewTheme()
+	th.Shaper = text.NewShaper(text.WithCollection(gofont.Collection()))
 	var ops op.Ops
-	imgOp := giopaint.NewImageOp(img)
 
 	for {
 		switch e := w.Event().(type) {
 		case app.DestroyEvent:
 			return e.Err
 		case app.FrameEvent:
-			ops.Reset()
+			gtx := app.NewContext(&ops, e)
 
-			imgOp.Add(&ops)
-			stack := clip.Rect{Max: image.Pt(windowWidth, windowHeight)}.Push(&ops)
-			giopaint.PaintOp{}.Add(&ops)
-			stack.Pop()
+			// Handle button clicks
+			if b.btnDOM.Clicked(gtx) {
+				b.activeTab = TabDOM
+			}
+			if b.btnStyle.Clicked(gtx) {
+				b.activeTab = TabStylesheet
+			}
+			if b.btnLayout.Clicked(gtx) {
+				b.activeTab = TabLayoutTree
+			}
+			if b.btnPaint.Clicked(gtx) {
+				b.activeTab = TabPaintOps
+			}
 
-			e.Frame(&ops)
+			b.layout(gtx, th)
+			e.Frame(gtx.Ops)
 		}
 	}
+}
+
+func (b *Browser) layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	return layout.Flex{}.Layout(gtx,
+		// Content area (left)
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return b.layoutContent(gtx)
+		}),
+		// DevTools area (right)
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return b.layoutDevTools(gtx, th)
+		}),
+	)
+}
+
+func (b *Browser) layoutContent(gtx layout.Context) layout.Dimensions {
+	imgOp := giopaint.NewImageOp(b.canvas)
+	imgOp.Add(gtx.Ops)
+	stack := clip.Rect{Max: image.Pt(contentWidth, contentHeight)}.Push(gtx.Ops)
+	giopaint.PaintOp{}.Add(gtx.Ops)
+	stack.Pop()
+
+	return layout.Dimensions{Size: image.Pt(contentWidth, contentHeight)}
+}
+
+func (b *Browser) layoutDevTools(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	// Background
+	bgColor := color.NRGBA{R: 40, G: 40, B: 40, A: 255}
+	stack := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
+	giopaint.ColorOp{Color: bgColor}.Add(gtx.Ops)
+	giopaint.PaintOp{}.Add(gtx.Ops)
+	stack.Pop()
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		// Tab buttons
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{}.Layout(gtx,
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return b.tabButton(gtx, th, &b.btnDOM, "DOM", TabDOM)
+				}),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return b.tabButton(gtx, th, &b.btnStyle, "Style", TabStylesheet)
+				}),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return b.tabButton(gtx, th, &b.btnLayout, "Layout", TabLayoutTree)
+				}),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return b.tabButton(gtx, th, &b.btnPaint, "Paint", TabPaintOps)
+				}),
+			)
+		}),
+		// Content area
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return b.layoutDevContent(gtx, th)
+		}),
+	)
+}
+
+func (b *Browser) tabButton(gtx layout.Context, th *material.Theme, btn *widget.Clickable, label string, tab DevTab) layout.Dimensions {
+	var bgColor color.NRGBA
+	if b.activeTab == tab {
+		bgColor = color.NRGBA{R: 60, G: 60, B: 60, A: 255}
+	} else {
+		bgColor = color.NRGBA{R: 50, G: 50, B: 50, A: 255}
+	}
+
+	return layout.Stack{}.Layout(gtx,
+		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+			stack := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
+			giopaint.ColorOp{Color: bgColor}.Add(gtx.Ops)
+			giopaint.PaintOp{}.Add(gtx.Ops)
+			stack.Pop()
+			return layout.Dimensions{Size: gtx.Constraints.Max}
+		}),
+		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				btnStyle := material.Button(th, btn, label)
+				btnStyle.Background = bgColor
+				btnStyle.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+				return btnStyle.Layout(gtx)
+			})
+		}),
+	)
+}
+
+func (b *Browser) layoutDevContent(gtx layout.Context, th *material.Theme) layout.Dimensions {
+	var content string
+	switch b.activeTab {
+	case TabDOM:
+		content = b.document.Dump()
+	case TabStylesheet:
+		if b.stylesheet != nil {
+			content = b.stylesheet.Dump()
+		} else {
+			content = "(no stylesheet)"
+		}
+	case TabLayoutTree:
+		content = b.layoutTree.Dump()
+	case TabPaintOps:
+		content = b.paintList.Dump()
+	}
+
+	return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return material.List(th, &b.devScroll).Layout(gtx, 1, func(gtx layout.Context, _ int) layout.Dimensions {
+			lbl := material.Body1(th, content)
+			lbl.Color = color.NRGBA{R: 200, G: 200, B: 200, A: 255}
+			return lbl.Layout(gtx)
+		})
+	})
 }
 
 func isURL(s string) bool {
