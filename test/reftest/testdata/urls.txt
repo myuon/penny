@@ -1,0 +1,6 @@
+# Test URLs for reftest
+# Lines starting with # are comments
+# Each line should contain one URL
+
+# Example:
+# https://example.com

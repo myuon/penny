@@ -1,15 +1,20 @@
 package reftest
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/md5"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/myuon/penny/css"
@@ -369,4 +374,272 @@ func savePNG(img *image.RGBA, path string) error {
 	}
 	defer f.Close()
 	return png.Encode(f, img)
+}
+
+// TestReftestURLs runs reftests against URLs listed in urls.txt
+func TestReftestURLs(t *testing.T) {
+	urlsFile := "testdata/urls.txt"
+	urls, err := readURLsFile(urlsFile)
+	if err != nil {
+		t.Skipf("no urls.txt found: %v", err)
+	}
+
+	if len(urls) == 0 {
+		t.Skip("no URLs in urls.txt")
+	}
+
+	// Initialize Playwright
+	pw, err := playwright.Run()
+	if err != nil {
+		t.Fatalf("could not start playwright: %v", err)
+	}
+	defer pw.Stop()
+
+	browser, err := pw.Chromium.Launch()
+	if err != nil {
+		t.Fatalf("could not launch browser: %v", err)
+	}
+	defer browser.Close()
+
+	// Create output directory
+	outputDir := "output"
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		t.Fatalf("failed to create output dir: %v", err)
+	}
+
+	// Run tests for each URL
+	for _, testURL := range urls {
+		testName := urlToTestName(testURL)
+
+		t.Run(testName, func(t *testing.T) {
+			result, err := runReftestURL(browser, testURL, testName)
+			if err != nil {
+				t.Fatalf("reftest failed: %v", err)
+			}
+
+			// Save combined image
+			outputPath := filepath.Join(outputDir, testName+"_diff.png")
+			if err := savePNG(result.CombinedImage, outputPath); err != nil {
+				t.Errorf("failed to save diff image: %v", err)
+			}
+
+			t.Logf("Diff: %.2f%% - Output: %s", result.DiffPercent, outputPath)
+		})
+	}
+}
+
+func readURLsFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var urls []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		urls = append(urls, line)
+	}
+
+	return urls, scanner.Err()
+}
+
+func urlToTestName(testURL string) string {
+	// Create a short name from URL using MD5 hash
+	parsed, err := url.Parse(testURL)
+	if err != nil {
+		return fmt.Sprintf("%x", md5.Sum([]byte(testURL)))[:8]
+	}
+
+	// Use host + path, sanitized
+	name := parsed.Host + parsed.Path
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ReplaceAll(name, ".", "_")
+	name = strings.ReplaceAll(name, ":", "_")
+
+	if len(name) > 50 {
+		name = name[:50]
+	}
+
+	return name
+}
+
+func runReftestURL(browser playwright.Browser, testURL, testName string) (*ReftestResult, error) {
+	// Get Chrome screenshot
+	chromeImg, err := captureChromeURL(browser, testURL)
+	if err != nil {
+		return nil, fmt.Errorf("chrome capture failed: %w", err)
+	}
+
+	// Get Penny rendering
+	pennyImg, err := capturePennyURL(testURL)
+	if err != nil {
+		return nil, fmt.Errorf("penny render failed: %w", err)
+	}
+
+	// Compare images
+	diffImg, diffPercent := compareImages(chromeImg, pennyImg)
+
+	// Create combined image (Chrome | Penny | Diff)
+	combinedImg := createCombinedImage(chromeImg, pennyImg, diffImg)
+
+	return &ReftestResult{
+		Name:          testName,
+		DiffPercent:   diffPercent,
+		ChromeImage:   chromeImg,
+		PennyImage:    pennyImg,
+		DiffImage:     diffImg,
+		CombinedImage: combinedImg,
+	}, nil
+}
+
+func captureChromeURL(browser playwright.Browser, testURL string) (*image.RGBA, error) {
+	page, err := browser.NewPage(playwright.BrowserNewPageOptions{
+		Viewport: &playwright.Size{
+			Width:  viewportWidth,
+			Height: viewportHeight,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer page.Close()
+
+	if _, err := page.Goto(testURL); err != nil {
+		return nil, err
+	}
+
+	// Wait for page to load
+	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State: playwright.LoadStateNetworkidle,
+	}); err != nil {
+		return nil, err
+	}
+
+	// Take screenshot
+	screenshot, err := page.Screenshot(playwright.PageScreenshotOptions{
+		Type: playwright.ScreenshotTypePng,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return decodePNG(screenshot)
+}
+
+func capturePennyURL(testURL string) (*image.RGBA, error) {
+	// Fetch HTML content
+	htmlContent, err := fetchURL(testURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse HTML
+	document, err := dom.ParseString(htmlContent)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse base URL for CSS loading
+	baseURL, err := url.Parse(testURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load CSS from URL
+	stylesheet := loadStylesheetsFromURL(document, baseURL)
+
+	// Build layout tree
+	layoutTree := layout.BuildLayoutTree(document, stylesheet)
+
+	// Compute layout
+	layout.ComputeLayout(layoutTree, viewportWidth, viewportHeight)
+
+	// Paint
+	paintList := paint.NewPaintList()
+	paint.PaintBackground(paintList, viewportWidth, viewportHeight, css.ColorWhite)
+	ops := paint.Paint(layoutTree)
+	paintList.Ops = append(paintList.Ops, ops.Ops...)
+
+	// Rasterize
+	img := paint.Rasterize(paintList, viewportWidth, viewportHeight)
+	return img, nil
+}
+
+func fetchURL(urlStr string) (string, error) {
+	resp, err := http.Get(urlStr)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}
+
+func loadStylesheetsFromURL(d *dom.DOM, baseURL *url.URL) *css.Stylesheet {
+	var allRules []css.Rule
+
+	var walk func(nodeID dom.NodeID)
+	walk = func(nodeID dom.NodeID) {
+		node := d.GetNode(nodeID)
+		if node == nil {
+			return
+		}
+
+		if node.Type == dom.NodeTypeElement && node.Tag == "link" {
+			rel, hasRel := node.Attr["rel"]
+			href, hasHref := node.Attr["href"]
+			if hasRel && rel == "stylesheet" && hasHref {
+				cssURL := resolveURL(baseURL, href)
+				if content, err := fetchURL(cssURL); err == nil {
+					if sheet, err := css.Parse(content); err == nil {
+						allRules = append(allRules, sheet.Rules...)
+					}
+				}
+			}
+		}
+
+		if node.Type == dom.NodeTypeElement && node.Tag == "style" {
+			cssText := extractTextContent(d, nodeID)
+			if cssText != "" {
+				if sheet, err := css.Parse(cssText); err == nil {
+					allRules = append(allRules, sheet.Rules...)
+				}
+			}
+		}
+
+		for _, childID := range node.Children {
+			walk(childID)
+		}
+	}
+
+	walk(d.Root)
+
+	if len(allRules) == 0 {
+		return nil
+	}
+
+	return &css.Stylesheet{Rules: allRules}
+}
+
+func resolveURL(base *url.URL, ref string) string {
+	refURL, err := url.Parse(ref)
+	if err != nil {
+		return ref
+	}
+	return base.ResolveReference(refURL).String()
 }
