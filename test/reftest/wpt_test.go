@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,10 +78,13 @@ func runWPTSuite(t *testing.T, suite string, threshold float64) {
 
 	t.Logf("Found %d test files in %s", len(testFiles), suite)
 
-	// Limit tests for now (full suite takes too long)
+	// Randomly select tests (full suite takes too long)
 	maxTests := 50
 	if len(testFiles) > maxTests {
-		t.Logf("Limiting to first %d tests", maxTests)
+		t.Logf("Randomly selecting %d tests from %d", maxTests, len(testFiles))
+		rand.Shuffle(len(testFiles), func(i, j int) {
+			testFiles[i], testFiles[j] = testFiles[j], testFiles[i]
+		})
 		testFiles = testFiles[:maxTests]
 	}
 
@@ -186,13 +190,11 @@ func runWPTTest(t *testing.T, browser playwright.Browser, serverAddr, testFile, 
 		t.Logf("FAIL: %.2f%% diff (threshold: %.2f%%)", diffPercent, threshold)
 	}
 
-	// Save diff image for failed tests
-	if result.Status == "fail" {
-		combinedImg := createCombinedImage(chromeImg, pennyImg, diffImg)
-		testName := strings.ReplaceAll(relPath, "/", "_")
-		outputPath := filepath.Join(outputDir, testName+"_diff.png")
-		savePNG(combinedImg, outputPath)
-	}
+	// Save diff image for all tests
+	combinedImg := createCombinedImage(chromeImg, pennyImg, diffImg)
+	testName := strings.ReplaceAll(relPath, "/", "_")
+	outputPath := filepath.Join(outputDir, testName+"_diff.png")
+	savePNG(combinedImg, outputPath)
 
 	return result
 }
