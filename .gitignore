@@ -12,3 +12,5 @@ penny
 
 # Test coverage
 coverage.out
+
+output/
