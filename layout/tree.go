@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"fmt"
+
 	"github.com/myuon/penny/css"
 	"github.com/myuon/penny/dom"
 )
@@ -55,4 +57,33 @@ func (t *LayoutTree) GetNode(id LayoutNodeID) *LayoutNode {
 		return nil
 	}
 	return &t.Nodes[id]
+}
+
+func (t *LayoutTree) Dump() string {
+	var result string
+	t.dumpNode(t.Root, 0, &result)
+	return result
+}
+
+func (t *LayoutTree) dumpNode(id LayoutNodeID, indent int, result *string) {
+	node := t.GetNode(id)
+	if node == nil {
+		return
+	}
+
+	prefix := ""
+	for i := 0; i < indent; i++ {
+		prefix += "  "
+	}
+
+	rect := fmt.Sprintf("(%.1f, %.1f, %.1f, %.1f)", node.Rect.X, node.Rect.Y, node.Rect.W, node.Rect.H)
+	if node.Text != "" {
+		*result += fmt.Sprintf("%s[text] %s \"%s\"\n", prefix, rect, node.Text)
+	} else {
+		*result += fmt.Sprintf("%s[%d] %s display=%s\n", prefix, node.DomNode, rect, node.Style.Display)
+	}
+
+	for _, childID := range node.Children {
+		t.dumpNode(childID, indent+1, result)
+	}
 }

@@ -11,7 +11,8 @@ import (
 
 	"github.com/myuon/penny/css"
 	"github.com/myuon/penny/dom"
-	"github.com/myuon/penny/renderer"
+	"github.com/myuon/penny/layout"
+	"github.com/myuon/penny/paint"
 	"github.com/spf13/cobra"
 )
 
@@ -19,6 +20,10 @@ var version = "0.1.0"
 
 func main() {
 	var outputFile string
+	var dumpDOM bool
+	var dumpStylesheet bool
+	var dumpLayoutTree bool
+	var dumpPaintOps bool
 
 	rootCmd := &cobra.Command{
 		Use:     "penny <input.html or URL>",
@@ -58,12 +63,52 @@ func main() {
 				return fmt.Errorf("failed to parse HTML: %w", err)
 			}
 
+			if dumpDOM {
+				fmt.Println("=== DOM ===")
+				fmt.Print(document.Dump())
+				fmt.Println()
+			}
+
 			// Find and load CSS files from <link> tags
 			var stylesheet *css.Stylesheet
 			if baseURL != nil {
 				stylesheet = loadStylesheetsFromURL(document, baseURL)
 			} else {
 				stylesheet = loadStylesheetsFromDir(document, baseDir)
+			}
+
+			if dumpStylesheet {
+				fmt.Println("=== Stylesheet ===")
+				if stylesheet != nil {
+					fmt.Print(stylesheet.Dump())
+				} else {
+					fmt.Println("(no stylesheet)")
+				}
+				fmt.Println()
+			}
+
+			// Build layout tree
+			layoutTree := layout.BuildLayoutTree(document, stylesheet)
+
+			// Compute layout
+			layout.ComputeLayout(layoutTree, 800, 600)
+
+			if dumpLayoutTree {
+				fmt.Println("=== Layout Tree ===")
+				fmt.Print(layoutTree.Dump())
+				fmt.Println()
+			}
+
+			// Paint
+			paintList := paint.NewPaintList()
+			paint.PaintBackground(paintList, 800, 600, css.ColorWhite)
+			ops := paint.Paint(layoutTree)
+			paintList.Ops = append(paintList.Ops, ops.Ops...)
+
+			if dumpPaintOps {
+				fmt.Println("=== Paint Ops ===")
+				fmt.Print(paintList.Dump())
+				fmt.Println()
 			}
 
 			// Ensure output directory exists
@@ -74,10 +119,10 @@ func main() {
 				}
 			}
 
-			// Render to PNG
-			r := renderer.New(800, 600)
-			if err := r.Render(document, stylesheet, outputFile); err != nil {
-				return fmt.Errorf("failed to render: %w", err)
+			// Rasterize and save
+			img := paint.Rasterize(paintList, 800, 600)
+			if err := paint.SavePNG(img, outputFile); err != nil {
+				return fmt.Errorf("failed to save PNG: %w", err)
 			}
 
 			fmt.Printf("Rendered to %s\n", outputFile)
@@ -86,6 +131,10 @@ func main() {
 	}
 
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "output.png", "output file path")
+	rootCmd.Flags().BoolVar(&dumpDOM, "dump-dom", false, "dump parsed DOM tree")
+	rootCmd.Flags().BoolVar(&dumpStylesheet, "dump-stylesheet", false, "dump parsed stylesheet")
+	rootCmd.Flags().BoolVar(&dumpLayoutTree, "dump-layout-tree", false, "dump layout tree")
+	rootCmd.Flags().BoolVar(&dumpPaintOps, "dump-paint-ops", false, "dump paint operations")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

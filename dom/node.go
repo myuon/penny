@@ -73,3 +73,36 @@ func (d *DOM) GetNode(id NodeID) *Node {
 	}
 	return &d.Nodes[id]
 }
+
+func (d *DOM) Dump() string {
+	var result string
+	d.dumpNode(d.Root, 0, &result)
+	return result
+}
+
+func (d *DOM) dumpNode(id NodeID, indent int, result *string) {
+	node := d.GetNode(id)
+	if node == nil {
+		return
+	}
+
+	prefix := ""
+	for i := 0; i < indent; i++ {
+		prefix += "  "
+	}
+
+	switch node.Type {
+	case NodeTypeElement:
+		attrs := ""
+		for k, v := range node.Attr {
+			attrs += " " + k + "=\"" + v + "\""
+		}
+		*result += prefix + "<" + node.Tag + attrs + ">\n"
+	case NodeTypeText:
+		*result += prefix + "\"" + node.Text + "\"\n"
+	}
+
+	for _, childID := range node.Children {
+		d.dumpNode(childID, indent+1, result)
+	}
+}

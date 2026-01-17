@@ -445,3 +445,31 @@ func parseRGBFunction(values []Token) *Color {
 
 	return nil
 }
+
+func (s *Stylesheet) Dump() string {
+	var result string
+	for _, rule := range s.Rules {
+		// Selectors
+		for i, sel := range rule.Selectors {
+			if i > 0 {
+				result += ", "
+			}
+			switch sel.Type {
+			case SelectorTag:
+				result += sel.Value
+			case SelectorClass:
+				result += "." + sel.Value
+			case SelectorID:
+				result += "#" + sel.Value
+			}
+		}
+		result += " {\n"
+
+		// Declarations
+		for _, decl := range rule.Declarations {
+			result += "  " + decl.Property + ": " + decl.Value + ";\n"
+		}
+		result += "}\n"
+	}
+	return result
+}
