@@ -2,8 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/myuon/penny/css"
 	"github.com/myuon/penny/dom"
@@ -17,30 +21,50 @@ func main() {
 	var outputFile string
 
 	rootCmd := &cobra.Command{
-		Use:     "penny <input.html>",
+		Use:     "penny <input.html or URL>",
 		Short:   "penny - a simple HTML renderer",
-		Long:    `penny is a command line tool that renders HTML files to PNG images.`,
+		Long:    `penny is a command line tool that renders HTML files or URLs to PNG images.`,
 		Args:    cobra.ExactArgs(1),
 		Version: version,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			inputFile := args[0]
-			inputDir := filepath.Dir(inputFile)
+			input := args[0]
 
-			// Read input file
-			file, err := os.Open(inputFile)
-			if err != nil {
-				return fmt.Errorf("failed to open input file: %w", err)
+			var htmlContent string
+			var baseURL *url.URL
+			var baseDir string
+
+			// Check if input is URL
+			if isURL(input) {
+				fmt.Printf("Fetching: %s\n", input)
+				content, err := fetchURL(input)
+				if err != nil {
+					return fmt.Errorf("failed to fetch URL: %w", err)
+				}
+				htmlContent = content
+				baseURL, _ = url.Parse(input)
+			} else {
+				// Read local file
+				data, err := os.ReadFile(input)
+				if err != nil {
+					return fmt.Errorf("failed to read file: %w", err)
+				}
+				htmlContent = string(data)
+				baseDir = filepath.Dir(input)
 			}
-			defer file.Close()
 
 			// Parse HTML
-			document, err := dom.Parse(file)
+			document, err := dom.ParseString(htmlContent)
 			if err != nil {
 				return fmt.Errorf("failed to parse HTML: %w", err)
 			}
 
 			// Find and load CSS files from <link> tags
-			stylesheet := loadStylesheets(document, inputDir)
+			var stylesheet *css.Stylesheet
+			if baseURL != nil {
+				stylesheet = loadStylesheetsFromURL(document, baseURL)
+			} else {
+				stylesheet = loadStylesheetsFromDir(document, baseDir)
+			}
 
 			// Ensure output directory exists
 			outputDir := filepath.Dir(outputFile)
@@ -69,10 +93,32 @@ func main() {
 	}
 }
 
-func loadStylesheets(d *dom.DOM, baseDir string) *css.Stylesheet {
+func isURL(s string) bool {
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+func fetchURL(urlStr string) (string, error) {
+	resp, err := http.Get(urlStr)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
+}
+
+func loadStylesheetsFromDir(d *dom.DOM, baseDir string) *css.Stylesheet {
 	var allRules []css.Rule
 
-	// Walk DOM to find <link rel="stylesheet"> tags
 	var walk func(nodeID dom.NodeID)
 	walk = func(nodeID dom.NodeID) {
 		node := d.GetNode(nodeID)
@@ -106,4 +152,50 @@ func loadStylesheets(d *dom.DOM, baseDir string) *css.Stylesheet {
 	}
 
 	return &css.Stylesheet{Rules: allRules}
+}
+
+func loadStylesheetsFromURL(d *dom.DOM, baseURL *url.URL) *css.Stylesheet {
+	var allRules []css.Rule
+
+	var walk func(nodeID dom.NodeID)
+	walk = func(nodeID dom.NodeID) {
+		node := d.GetNode(nodeID)
+		if node == nil {
+			return
+		}
+
+		if node.Type == dom.NodeTypeElement && node.Tag == "link" {
+			rel, hasRel := node.Attr["rel"]
+			href, hasHref := node.Attr["href"]
+			if hasRel && rel == "stylesheet" && hasHref {
+				cssURL := resolveURL(baseURL, href)
+				if content, err := fetchURL(cssURL); err == nil {
+					if sheet, err := css.Parse(content); err == nil {
+						allRules = append(allRules, sheet.Rules...)
+						fmt.Printf("Loaded CSS: %s\n", cssURL)
+					}
+				}
+			}
+		}
+
+		for _, childID := range node.Children {
+			walk(childID)
+		}
+	}
+
+	walk(d.Root)
+
+	if len(allRules) == 0 {
+		return nil
+	}
+
+	return &css.Stylesheet{Rules: allRules}
+}
+
+func resolveURL(base *url.URL, ref string) string {
+	refURL, err := url.Parse(ref)
+	if err != nil {
+		return ref
+	}
+	return base.ResolveReference(refURL).String()
 }
