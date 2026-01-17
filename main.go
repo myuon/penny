@@ -189,6 +189,17 @@ func loadStylesheetsFromDir(d *dom.DOM, baseDir string) *css.Stylesheet {
 			}
 		}
 
+		// Handle <style> tags
+		if node.Type == dom.NodeTypeElement && node.Tag == "style" {
+			cssText := extractTextContent(d, nodeID)
+			if cssText != "" {
+				if sheet, err := css.Parse(cssText); err == nil {
+					allRules = append(allRules, sheet.Rules...)
+					fmt.Println("Loaded CSS: <style>")
+				}
+			}
+		}
+
 		for _, childID := range node.Children {
 			walk(childID)
 		}
@@ -227,6 +238,17 @@ func loadStylesheetsFromURL(d *dom.DOM, baseURL *url.URL) *css.Stylesheet {
 			}
 		}
 
+		// Handle <style> tags
+		if node.Type == dom.NodeTypeElement && node.Tag == "style" {
+			cssText := extractTextContent(d, nodeID)
+			if cssText != "" {
+				if sheet, err := css.Parse(cssText); err == nil {
+					allRules = append(allRules, sheet.Rules...)
+					fmt.Println("Loaded CSS: <style>")
+				}
+			}
+		}
+
 		for _, childID := range node.Children {
 			walk(childID)
 		}
@@ -247,4 +269,23 @@ func resolveURL(base *url.URL, ref string) string {
 		return ref
 	}
 	return base.ResolveReference(refURL).String()
+}
+
+func extractTextContent(d *dom.DOM, nodeID dom.NodeID) string {
+	var text string
+	var walk func(id dom.NodeID)
+	walk = func(id dom.NodeID) {
+		node := d.GetNode(id)
+		if node == nil {
+			return
+		}
+		if node.Type == dom.NodeTypeText {
+			text += node.Text
+		}
+		for _, childID := range node.Children {
+			walk(childID)
+		}
+	}
+	walk(nodeID)
+	return text
 }
