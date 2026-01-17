@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	contentWidth  = 600
+	contentWidth  = 800
 	contentHeight = 600
 	devToolsWidth = 400
 	windowWidth   = contentWidth + devToolsWidth
@@ -176,7 +176,7 @@ func (b *Browser) run(w *app.Window) error {
 func (b *Browser) layout(gtx layout.Context, th *material.Theme) layout.Dimensions {
 	return layout.Flex{}.Layout(gtx,
 		// Content area (left)
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			return b.layoutContent(gtx)
 		}),
 		// DevTools area (right)
@@ -206,7 +206,7 @@ func (b *Browser) layoutDevTools(gtx layout.Context, th *material.Theme) layout.
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		// Tab buttons
-		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 					return b.tabButton(gtx, th, &b.btnDOM, "DOM", TabDOM)
@@ -237,23 +237,12 @@ func (b *Browser) tabButton(gtx layout.Context, th *material.Theme, btn *widget.
 		bgColor = color.NRGBA{R: 50, G: 50, B: 50, A: 255}
 	}
 
-	return layout.Stack{}.Layout(gtx,
-		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-			stack := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
-			giopaint.ColorOp{Color: bgColor}.Add(gtx.Ops)
-			giopaint.PaintOp{}.Add(gtx.Ops)
-			stack.Pop()
-			return layout.Dimensions{Size: gtx.Constraints.Max}
-		}),
-		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-			return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				btnStyle := material.Button(th, btn, label)
-				btnStyle.Background = bgColor
-				btnStyle.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-				return btnStyle.Layout(gtx)
-			})
-		}),
-	)
+	return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		btnStyle := material.Button(th, btn, label)
+		btnStyle.Background = bgColor
+		btnStyle.Color = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+		return btnStyle.Layout(gtx)
+	})
 }
 
 func (b *Browser) layoutDevContent(gtx layout.Context, th *material.Theme) layout.Dimensions {
