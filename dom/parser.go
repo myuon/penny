@@ -63,8 +63,89 @@ func (p *Parser) currentParent() NodeID {
 	return p.stack[len(p.stack)-1]
 }
 
+// hasTagInStack returns true if the given tag exists in the stack
+func (p *Parser) hasTagInStack(tag string) bool {
+	for _, nodeID := range p.stack {
+		node := p.dom.GetNode(nodeID)
+		if node != nil && node.Tag == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureHtmlHead ensures that <html> and <head> elements exist in the DOM
+// This is called when encountering head content without proper wrappers
+func (p *Parser) ensureHtmlHead() {
+	// Create <html> if not present
+	if !p.hasTagInStack("html") && p.dom.Root == InvalidNodeID {
+		htmlID := p.dom.CreateElement("html")
+		p.dom.Root = htmlID
+		p.stack = append(p.stack, htmlID)
+	}
+
+	// Create <head> if not present
+	if !p.hasTagInStack("head") {
+		headID := p.dom.CreateElement("head")
+		parent := p.currentParent()
+		if parent != InvalidNodeID {
+			p.dom.AppendChild(parent, headID)
+		}
+		p.stack = append(p.stack, headID)
+	}
+}
+
+// closeHead closes the <head> element if it's currently open
+func (p *Parser) closeHead() {
+	for i := len(p.stack) - 1; i >= 0; i-- {
+		node := p.dom.GetNode(p.stack[i])
+		if node != nil && node.Tag == "head" {
+			p.stack = p.stack[:i]
+			return
+		}
+	}
+}
+
+// ensureHtmlBody ensures that <html> and <body> elements exist in the DOM
+// This is called when encountering body content without proper wrappers
+func (p *Parser) ensureHtmlBody() {
+	// Create <html> if not present
+	if !p.hasTagInStack("html") && p.dom.Root == InvalidNodeID {
+		htmlID := p.dom.CreateElement("html")
+		p.dom.Root = htmlID
+		p.stack = append(p.stack, htmlID)
+	}
+
+	// Close <head> if it's open (transitioning from head to body)
+	if p.hasTagInStack("head") {
+		p.closeHead()
+	}
+
+	// Create <body> if not present
+	if !p.hasTagInStack("body") {
+		bodyID := p.dom.CreateElement("body")
+		parent := p.currentParent()
+		if parent != InvalidNodeID {
+			p.dom.AppendChild(parent, bodyID)
+		}
+		p.stack = append(p.stack, bodyID)
+	}
+}
+
 func (p *Parser) handleStartTag(tok Token) {
-	nodeID := p.dom.CreateElement(tok.Data)
+	tag := tok.Data
+
+	// Auto-insert html/head for head content elements
+	if isHeadContent(tag) && !p.hasTagInStack("head") && !p.hasTagInStack("body") {
+		p.ensureHtmlHead()
+	}
+
+	// Auto-insert html/body for body content elements
+	if isBodyContent(tag) && !p.hasTagInStack("body") {
+		p.ensureHtmlBody()
+	}
+
+	nodeID := p.dom.CreateElement(tag)
 	for _, attr := range tok.Attributes {
 		p.dom.SetAttribute(nodeID, attr.Key, attr.Value)
 	}
@@ -80,7 +161,7 @@ func (p *Parser) handleStartTag(tok Token) {
 	}
 
 	// Push to stack (for non-void elements)
-	if !isVoidElement(tok.Data) {
+	if !isVoidElement(tag) {
 		p.stack = append(p.stack, nodeID)
 	}
 }
@@ -97,7 +178,19 @@ func (p *Parser) handleEndTag(tok Token) {
 }
 
 func (p *Parser) handleSelfClosingTag(tok Token) {
-	nodeID := p.dom.CreateElement(tok.Data)
+	tag := tok.Data
+
+	// Auto-insert html/head for head content elements
+	if isHeadContent(tag) && !p.hasTagInStack("head") && !p.hasTagInStack("body") {
+		p.ensureHtmlHead()
+	}
+
+	// Auto-insert html/body for body content elements
+	if isBodyContent(tag) && !p.hasTagInStack("body") {
+		p.ensureHtmlBody()
+	}
+
+	nodeID := p.dom.CreateElement(tag)
 	for _, attr := range tok.Attributes {
 		p.dom.SetAttribute(nodeID, attr.Key, attr.Value)
 	}
@@ -133,6 +226,31 @@ func isVoidElement(tag string) bool {
 	switch tag {
 	case "area", "base", "br", "col", "embed", "hr", "img", "input",
 		"link", "meta", "param", "source", "track", "wbr":
+		return true
+	}
+	return false
+}
+
+// isBodyContent returns true for elements that should be inside <body>
+func isBodyContent(tag string) bool {
+	switch tag {
+	case "p", "div", "span", "h1", "h2", "h3", "h4", "h5", "h6",
+		"ul", "ol", "li", "dl", "dt", "dd",
+		"table", "tr", "td", "th", "thead", "tbody", "tfoot",
+		"form", "fieldset", "legend", "label", "button", "select", "option", "textarea",
+		"article", "section", "nav", "aside", "header", "footer", "main",
+		"figure", "figcaption", "blockquote", "pre", "code",
+		"a", "strong", "em", "b", "i", "u", "s", "small", "mark", "sub", "sup",
+		"img", "video", "audio", "canvas", "svg", "iframe":
+		return true
+	}
+	return false
+}
+
+// isHeadContent returns true for elements that should be inside <head>
+func isHeadContent(tag string) bool {
+	switch tag {
+	case "title", "meta", "link", "style", "script", "base":
 		return true
 	}
 	return false
